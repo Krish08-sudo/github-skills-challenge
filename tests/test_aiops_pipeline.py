@@ -1,4 +1,4 @@
-from pathlib import Path
+import runpy
 
 from src.anomaly_detector import AnomalyDetector
 from src.aiops_pipeline import run_pipeline
@@ -42,6 +42,28 @@ def test_anomalous_record_is_detected():
     assert event["type"] == "ANOMALY"
 
 
+def test_detector_reports_cpu_memory_and_warning_anomalies():
+    detector = AnomalyDetector()
+
+    record = {
+        "timestamp": "2026-09-20T10:06:00",
+        "service": "payment-service",
+        "response_time_ms": 120,
+        "cpu_percent": 81,
+        "memory_percent": 81,
+        "log_level": "WARNING",
+        "message": "Resource utilization warning"
+    }
+
+    event = detector.detect(record)
+
+    assert event["reasons"] == [
+        "High CPU utilization",
+        "High memory utilization",
+        "Error log detected"
+    ]
+
+
 def test_producer_publishes_event():
     topic = EventTopic("anomaly-events")
     producer = EventProducer(topic)
@@ -53,6 +75,21 @@ def test_producer_publishes_event():
 
     assert producer.publish(event)
     assert len(topic.get_messages()) == 1
+
+
+def test_producer_rejects_empty_event():
+    producer = EventProducer(EventTopic("anomaly-events"))
+
+    assert producer.publish(None) is False
+
+
+def test_topic_clear_removes_messages():
+    topic = EventTopic("anomaly-events")
+    topic.publish({"type": "ANOMALY"})
+
+    topic.clear()
+
+    assert topic.get_messages() == []
 
 
 def test_consumer_receives_event():
@@ -70,3 +107,23 @@ def test_consumer_receives_event():
     messages = consumer.consume()
 
     assert len(messages) == 1
+
+
+def test_pipeline_processes_data_file(tmp_path):
+    data_file = tmp_path / "service_data.json"
+    data_file.write_text(
+        '[{"timestamp": "2026-09-20T10:00:00", "service": "payment-service", '
+        '"response_time_ms": 610, "cpu_percent": 75, "memory_percent": 70, '
+        '"log_level": "ERROR", "message": "Payment service timeout"}]',
+        encoding="utf-8"
+    )
+
+    result = run_pipeline(data_file)
+
+    assert result["records_processed"] == 1
+    assert len(result["anomalies_detected"]) == 1
+    assert result["events_consumed"] == []
+
+
+def test_pipeline_command_line_entry_point():
+    runpy.run_path("src/aiops_pipeline.py", run_name="__main__")
